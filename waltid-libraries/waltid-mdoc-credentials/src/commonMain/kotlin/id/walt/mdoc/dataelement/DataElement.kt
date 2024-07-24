@@ -72,6 +72,45 @@ class DEFullDateAttribute(val mode: DEFullDateMode = DEFullDateMode.full_date_st
 
 @Serializer(forClass = DataElement::class)
 @OptIn(ExperimentalSerializationApi::class)
+internal object OptionalTagSerializer : KSerializer<TDateElementOptionalTag> {
+
+    override fun deserialize(decoder: Decoder): TDateElementOptionalTag {
+        val curHead = decoder.peek()
+        return when (val majorType = curHead.shr(5)) {
+            3 -> TDateElement(Instant.parse(decoder.decodeString()))
+            6 -> {
+                when (val tag = decoder.decodeTag()) {
+                    TDATE -> TDateElement(Instant.parse(decoder.decodeString()))
+                    else -> throw SerializationException("The given tagged value type $tag is should not be used in this workaround")
+                }
+            }
+
+            else -> throw SerializationException("Cannot deserialize value with given major type $majorType")
+        }
+    }
+
+    override fun serialize(encoder: Encoder, value: TDateElementOptionalTag) {
+        when (value.type) {
+            DEType.dateTime -> serializeDateTime(encoder, value as DateTimeElement)
+            else -> throw SerializationException("Cannot serialize value with given type ${value.type}")
+        }
+    }
+
+    private fun serializeDateTime(encoder: Encoder, dateTime: DateTimeElement) {
+        val attribute = dateTime.attribute as DEDateTimeAttribute
+        when (attribute.mode) {
+            DEDateTimeMode.tdate -> {
+                encoder.encodeTag(TDATE.toULong())
+                encoder.encodeString(dateTime.value.toString())
+            }
+
+            else -> throw SerializationException("The given mode ${attribute.mode} should not be used in this workaround")
+        }
+    }
+}
+
+@Serializer(forClass = DataElement::class)
+@OptIn(ExperimentalSerializationApi::class)
 internal object DataElementSerializer : KSerializer<DataElement> {
 
     override fun deserialize(decoder: Decoder): DataElement {
@@ -147,8 +186,14 @@ internal object DataElementSerializer : KSerializer<DataElement> {
                 encoder.encodeTag(TIME.toULong())
                 when (attribute.mode) {
                     DEDateTimeMode.time_int -> encoder.encodeLong(dateTime.value.epochSeconds)
-                    DEDateTimeMode.time_float -> encoder.encodeFloat(dateTime.value.toEpochMilliseconds().toFloat() / 1000f)
-                    DEDateTimeMode.time_double -> encoder.encodeDouble(dateTime.value.toEpochMilliseconds().toDouble() / 1000.0)
+                    DEDateTimeMode.time_float -> encoder.encodeFloat(
+                        dateTime.value.toEpochMilliseconds().toFloat() / 1000f
+                    )
+
+                    DEDateTimeMode.time_double -> encoder.encodeDouble(
+                        dateTime.value.toEpochMilliseconds().toDouble() / 1000.0
+                    )
+
                     else -> {} // not possible
                 }
             }
@@ -196,7 +241,11 @@ internal object DataElementSerializer : KSerializer<DataElement> {
     private fun deserializeFullDate(decoder: Decoder, tag: Long): FullDateElement {
         return when (tag) {
             FULL_DATE_STR -> FullDateElement(LocalDate.parse(decoder.decodeString()), DEFullDateMode.full_date_str)
-            FULL_DATE_INT -> FullDateElement(LocalDate.fromEpochDays(decoder.decodeLong().toInt()), DEFullDateMode.full_date_int)
+            FULL_DATE_INT -> FullDateElement(
+                LocalDate.fromEpochDays(decoder.decodeLong().toInt()),
+                DEFullDateMode.full_date_int
+            )
+
             else -> throw SerializationException("Unsupported tag number for full-date: #6.$tag, supported tags are #6.1004, #6.100")
         }
     }
@@ -216,7 +265,12 @@ abstract class DataElement(
     override fun equals(other: Any?): Boolean {
         val res = other is DataElement && other.type == type && when (type) {
             DEType.byteString, DEType.encodedCbor -> (internalValue as ByteArray).contentEquals(other.internalValue as ByteArray)
-            DEType.list -> (internalValue as List<DataElement>).all { (other.internalValue as List<DataElement>).contains(it) }
+            DEType.list -> (internalValue as List<DataElement>).all {
+                (other.internalValue as List<DataElement>).contains(
+                    it
+                )
+            }
+
             DEType.map -> (internalValue as Map<MapKey, DataElement>).all { (other.internalValue as Map<MapKey, DataElement>)[it.key] == it.value }
             else -> internalValue == other.internalValue
         }
@@ -325,6 +379,12 @@ open class DateTimeElement(val value: Instant, subType: DEDateTimeMode = DEDateT
  */
 @Serializable(with = DataElementSerializer::class)
 class TDateElement(value: Instant) : DateTimeElement(value, DEDateTimeMode.tdate)
+
+
+/**
+ * Wrapper type for TDate values with possibly missing date/time tags
+ */
+typealias TDateElementOptionalTag = @Serializable(with = OptionalTagSerializer::class) TDateElement
 
 /*
  * Full date element: #6.1004 (RFC 3339 full-date string), #6.100 (Number of days since epoch)
